@@ -36,7 +36,10 @@ CcxtModuleType = Any
 
 
 def is_exchange_known_ccxt(exchange_name: str, ccxt_module: CcxtModuleType | None = None) -> bool:
-    return exchange_name in ccxt_exchanges(ccxt_module)
+    if exchange_name in ccxt_exchanges(ccxt_module):
+        return True
+
+    return exchange_name in _custom_exchange_names()
 
 
 def ccxt_exchanges(ccxt_module: CcxtModuleType | None = None) -> list[str]:
@@ -46,12 +49,23 @@ def ccxt_exchanges(ccxt_module: CcxtModuleType | None = None) -> list[str]:
     return ccxt_module.exchanges if ccxt_module is not None else ccxt.exchanges
 
 
+def _custom_exchange_names() -> set[str]:
+    from freqtrade.resolvers.exchange_resolver import ExchangeResolver
+
+    return {
+        e["name"].lower()
+        for e in ExchangeResolver.search_all_objects({}, False)
+        if e["name"].lower() != "exchange"
+    }
+
+
 def available_exchanges(ccxt_module: CcxtModuleType | None = None) -> list[str]:
     """
-    Return exchanges available to the bot, i.e. non-bad exchanges in the ccxt list
+    Return exchanges available to the bot, i.e. non-bad exchanges in the ccxt list and custom exchanges.
     """
-    exchanges = ccxt_exchanges(ccxt_module)
-    return [x for x in exchanges if validate_exchange(x)[0]]
+    exchanges = set(ccxt_exchanges(ccxt_module))
+    exchanges.update(_custom_exchange_names())
+    return sorted([x for x in exchanges if validate_exchange(x)[0]])
 
 
 def _exchange_has_helper(ex_mod: ccxt.Exchange, required: dict[str, list[str]]) -> list[str]:
@@ -77,7 +91,17 @@ def validate_exchange(exchange: str) -> tuple[bool, str, str, ccxt.Exchange | No
     try:
         ex_mod = getattr(ccxt.pro, exchange.lower())()
     except AttributeError:
-        ex_mod = getattr(ccxt.async_support, exchange.lower())()
+        try:
+            ex_mod = getattr(ccxt.async_support, exchange.lower())()
+        except AttributeError:
+            from freqtrade.resolvers.exchange_resolver import ExchangeResolver
+
+            custom_exchanges = {
+                e["name"].lower(): e for e in ExchangeResolver.search_all_objects({}, False)
+            }
+            if exchange in custom_exchanges:
+                return True, "custom exchange implementation", "", None
+            return False, "", "", None
 
     if not ex_mod or not ex_mod.has:
         return False, "", "", None
@@ -113,19 +137,19 @@ def _build_exchange_list_entry(
     exchange_name = exchange_name.lower()
     valid, comment, comment_fut, ex_mod = validate_exchange(exchange_name)
     mapped_exchange_name = MAP_EXCHANGE_CHILDCLASS.get(exchange_name, exchange_name).lower()
-    is_alias = getattr(ex_mod, "alias", False)
+    is_alias = getattr(ex_mod, "alias", False) if ex_mod else False
     result: ValidExchangesType = {
-        "name": getattr(ex_mod, "name", exchange_name),
+        "name": getattr(ex_mod, "name", exchange_name) if ex_mod else exchange_name,
         "classname": exchange_name,
         "valid": valid,
         "supported": mapped_exchange_name in SUPPORTED_EXCHANGES and not is_alias,
         "comment": comment,
         "comment_futures": comment_fut,
-        "dex": getattr(ex_mod, "dex", False),
+        "dex": getattr(ex_mod, "dex", False) if ex_mod else False,
         "is_alias": is_alias,
-        "alias_for": inspect.getmro(ex_mod.__class__)[1]().id
-        if getattr(ex_mod, "alias", False)
-        else None,
+        "alias_for": (
+            inspect.getmro(ex_mod.__class__)[1]().id if ex_mod and getattr(ex_mod, "alias", False) else None
+        ),
         "trade_modes": [{"trading_mode": "spot", "margin_mode": ""}],
     }
     if resolved := exchangeClasses.get(mapped_exchange_name):
@@ -146,13 +170,14 @@ def list_available_exchanges(all_exchanges: bool) -> list[ValidExchangesType]:
     """
     :return: List of tuples with exchangename, valid, reason.
     """
-    exchanges = ccxt_exchanges() if all_exchanges else available_exchanges()
+    exchanges = set(ccxt_exchanges()) if all_exchanges else set(available_exchanges())
+    exchanges.update(_custom_exchange_names())
     from freqtrade.resolvers.exchange_resolver import ExchangeResolver
 
     subclassed = {e["name"].lower(): e for e in ExchangeResolver.search_all_objects({}, False)}
 
     exchanges_valid: list[ValidExchangesType] = [
-        _build_exchange_list_entry(e, subclassed) for e in exchanges
+        _build_exchange_list_entry(e, subclassed) for e in sorted(exchanges)
     ]
 
     return exchanges_valid

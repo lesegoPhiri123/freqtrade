@@ -233,3 +233,10 @@ To run this bot we recommend you a cloud instance with a minimum of:
 - [TA-Lib](https://ta-lib.github.io/ta-lib-python/)
 - [virtualenv](https://virtualenv.pypa.io/en/stable/installation.html) (Recommended)
 - [Docker](https://www.docker.com/products/docker) (Recommended)
+
+
+Terminal 
+source .venv/bin/activate && uvicorn user_data.mt5_bridge.web_server:app --host 0.0.0.0 --port 8080
+
+KILL 
+fuser -k 8080/tcp
